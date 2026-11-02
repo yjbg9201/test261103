@@ -1,0 +1,140 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Todo</title>
+<style>
+  :root { --bg:#f6f7f9; --fg:#1d2330; --muted:#7a8296; --card:#fff; --accent:#3b6cf6; --line:#e4e7ee; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#14171f; --fg:#e8eaf0; --muted:#8a92a6; --card:#1e222d; --accent:#6b8cff; --line:#2c3140; }
+  }
+  * { box-sizing:border-box }
+  body { margin:0; background:var(--bg); color:var(--fg); font:16px/1.5 system-ui,sans-serif; }
+  main { max-width:480px; margin:0 auto; padding:24px 16px 64px; }
+  h1 { font-size:22px; margin:0 0 16px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:8px; }
+  form { display:flex; gap:8px; margin-bottom:12px; }
+  input[type=text] { flex:1; padding:10px 12px; border:1px solid var(--line); border-radius:8px; background:var(--card); color:var(--fg); font:inherit; }
+  button { padding:10px 14px; border:0; border-radius:8px; background:var(--accent); color:#fff; font:inherit; cursor:pointer; }
+  button.ghost { background:transparent; color:var(--muted); padding:4px 8px; }
+  ul { list-style:none; margin:0; padding:0; }
+  li { display:flex; align-items:center; gap:10px; padding:10px 8px; border-bottom:1px solid var(--line); }
+  li:last-child { border-bottom:0; }
+  li span { flex:1; word-break:break-word; }
+  li.done span { text-decoration:line-through; color:var(--muted); }
+  input[type=checkbox] { width:20px; height:20px; accent-color:var(--accent); }
+  .empty { color:var(--muted); text-align:center; padding:16px; }
+  .bar { margin-top:16px; display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+  .bar select { padding:10px; border-radius:8px; border:1px solid var(--line); background:var(--card); color:var(--fg); font:inherit; }
+  .note { color:var(--muted); font-size:13px; margin-top:8px; }
+  .banner { background:var(--card); border:1px solid var(--line); border-radius:8px; padding:10px 12px; margin-bottom:12px; font-size:14px; }
+  [hidden] { display:none !important; }
+</style>
+</head>
+<body>
+<main>
+  <h1 id="title">Todo</h1>
+  <div id="banner" class="banner" hidden></div>
+
+  <form id="form">
+    <input id="input" type="text" placeholder="やること…" autocomplete="off">
+    <button>追加</button>
+  </form>
+
+  <div class="card"><ul id="list"></ul></div>
+
+  <div class="bar" id="shareBar">
+    <select id="ttl">
+      <option value="3600000">1時間</option>
+      <option value="86400000" selected>24時間</option>
+      <option value="604800000">7日間</option>
+    </select>
+    <button id="share">共有リンクを作る</button>
+    <button class="ghost" id="clear">完了を削除</button>
+  </div>
+  <p class="note" id="note">共有リンクを開いた人は、アプリやログインなしで内容を見られます（閲覧専用・期限つき）。データはリンク自体に入っていて、サーバーには保存されません。</p>
+</main>
+
+<script>
+const KEY = 'todos-v1';
+const $ = id => document.getElementById(id);
+const list = $('list');
+
+// UTF-8 safe base64url
+const enc = obj => btoa(String.fromCharCode(...new TextEncoder().encode(JSON.stringify(obj))))
+  .replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
+const dec = s => {
+  s = s.replace(/-/g,'+').replace(/_/g,'/');
+  const bin = atob(s + '='.repeat((4 - s.length % 4) % 4));
+  return JSON.parse(new TextDecoder().decode(Uint8Array.from(bin, c => c.charCodeAt(0))));
+};
+
+function render(todos, readonly) {
+  list.innerHTML = '';
+  if (!todos.length) list.innerHTML = '<li class="empty">タスクはありません</li>';
+  todos.forEach((t, i) => {
+    const li = document.createElement('li');
+    if (t.d) li.className = 'done';
+    const cb = document.createElement('input');
+    cb.type = 'checkbox'; cb.checked = !!t.d; cb.disabled = readonly;
+    const sp = document.createElement('span'); sp.textContent = t.t;
+    li.append(cb, sp);
+    if (!readonly) {
+      cb.onchange = () => { todos[i].d = cb.checked ? 1 : 0; save(todos); render(todos); };
+      const x = document.createElement('button');
+      x.className = 'ghost'; x.textContent = '✕';
+      x.onclick = () => { todos.splice(i, 1); save(todos); render(todos); };
+      li.append(x);
+    }
+    list.append(li);
+  });
+}
+const save = todos => { try { localStorage.setItem(KEY, JSON.stringify(todos)); } catch {} };
+const load = () => { try { return JSON.parse(localStorage.getItem(KEY)) || []; } catch { return []; } };
+
+function startViewer(hash) {
+  $('form').hidden = $('shareBar').hidden = true;
+  $('note').hidden = true;
+  $('title').textContent = '共有されたTodo';
+  const b = $('banner'); b.hidden = false;
+  try {
+    const data = dec(hash.slice(3));
+    if (Date.now() > data.e) { b.textContent = 'このリンクは期限切れです。'; render([], true); return; }
+    b.textContent = '閲覧専用 · ' + new Date(data.e).toLocaleString('ja-JP') + ' まで有効';
+    render(data.l, true);
+  } catch {
+    b.textContent = 'リンクが正しくありません。'; render([], true);
+  }
+}
+
+function startOwner() {
+  const todos = load();
+  render(todos);
+  $('form').onsubmit = e => {
+    e.preventDefault();
+    const v = $('input').value.trim();
+    if (!v) return;
+    todos.push({ t: v, d: 0 }); save(todos); render(todos);
+    $('input').value = '';
+  };
+  $('clear').onclick = () => {
+    const rest = todos.filter(t => !t.d);
+    todos.length = 0; todos.push(...rest); save(todos); render(todos);
+  };
+  $('share').onclick = async () => {
+    const payload = { l: todos, e: Date.now() + Number($('ttl').value) };
+    const url = location.origin + location.pathname + '#s=' + enc(payload);
+    try {
+      if (navigator.share) await navigator.share({ title: 'Todo', url });
+      else await navigator.clipboard.writeText(url);
+      $('share').textContent = 'コピーしました ✓';
+    } catch { prompt('このリンクを共有してください', url); }
+    setTimeout(() => $('share').textContent = '共有リンクを作る', 2000);
+  };
+}
+
+location.hash.startsWith('#s=') ? startViewer(location.hash) : startOwner();
+</script>
+</body>
+</html>
